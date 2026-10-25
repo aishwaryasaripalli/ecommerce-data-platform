@@ -101,6 +101,14 @@ docker compose exec workspace python /home/jovyan/src/producers/order_producer.p
 
 Tips: `--speedup 0` sends as fast as possible; `--dry-run` prints without touching Kafka.
 
+The producer runs inside the `workspace` container, so `docker compose up -d --build` (or anything
+that restarts `workspace`) stops it. To resume without re-sending orders, pass the last purchase
+time that made it (the progress lines show it, or check Bronze's max `order_purchase_timestamp`):
+
+```bash
+docker compose exec workspace python /home/jovyan/src/producers/order_producer.py --start-after '2018-05-17 21:55:40'
+```
+
 ### Step 7: Trigger your first Airflow DAG
 
 In Airflow, find `hello_ecommerce_platform`, click the play button > **Trigger DAG**, and watch

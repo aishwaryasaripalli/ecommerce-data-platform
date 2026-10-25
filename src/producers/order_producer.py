@@ -20,6 +20,7 @@ KEY CONCEPTS YOU'LL MEET HERE
 USAGE (run inside the workspace container; see README)
     python /home/jovyan/src/producers/order_producer.py --limit 200
     python /home/jovyan/src/producers/order_producer.py --dry-run --limit 5
+    python /home/jovyan/src/producers/order_producer.py --start-after '2018-05-17 21:55:40'
 """
 
 from __future__ import annotations
@@ -46,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--topic", default="orders")
     p.add_argument("--partitions", type=int, default=3, help="partitions if the topic must be created")
     p.add_argument("--limit", type=int, default=None, help="only send the first N orders (good for testing)")
+    p.add_argument("--start-after", default=None, metavar="'YYYY-MM-DD HH:MM:SS'",
+                   help="resume a stopped replay: only send orders purchased after this time")
     p.add_argument("--speedup", type=float, default=50000,
                    help="time compression: 50000 means 50000 real seconds pass in 1 second. 0 = no pauses")
     p.add_argument("--max-sleep", type=float, default=0.5,
@@ -98,6 +101,12 @@ def make_event(row: dict) -> dict:
 def main() -> None:
     args = parse_args()
     rows = load_orders(args.csv)
+    if args.start_after:
+        # Same string comparison the sort uses; datetime parsing validates the format
+        datetime.strptime(args.start_after, TS_FORMAT)
+        rows = [r for r in rows if r[TS_FIELD] > args.start_after]
+        if not rows:
+            sys.exit(f"No orders after {args.start_after}; nothing to send.")
     if args.limit:
         rows = rows[: args.limit]
     print(f"Loaded {len(rows):,} orders "
