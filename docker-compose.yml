@@ -123,6 +123,11 @@ services:
       - "8888:8888"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      # Phase 3: Spark writes the lake to MinIO through the S3 API
+      - S3_ENDPOINT=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - LAKE_BUCKET=lake
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./src:/home/jovyan/src

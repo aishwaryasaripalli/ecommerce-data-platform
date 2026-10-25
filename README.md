@@ -3,7 +3,7 @@
 An end-to-end data engineering project built to learn (and demonstrate) Kafka, Spark, Delta Lake,
 Airflow, dbt, Snowflake, Terraform and CI/CD on the public **Olist Brazilian e-commerce** dataset.
 
-**Current status: Phase 1 (environment) and Phase 2 (Kafka producer) are in this package.**
+**Current status: Phases 1-3 done: local stack, Kafka order replay, and Bronze Delta tables on MinIO.**
 
 ---
 
@@ -108,6 +108,60 @@ the task turn green. That proves Airflow can see your `dags/` folder.
 
 ---
 
+## Phase 3: Bronze layer (Kafka + CSVs -> Delta Lake on MinIO)
+
+```
+Kafka "orders" --(Spark Structured Streaming)--> s3a://lake/bronze/orders
+8 other CSVs   --(Spark batch)------------------> s3a://lake/bronze/<table>
+```
+
+Bronze keeps data exactly as it arrived (all strings, duplicates included) plus metadata saying
+where each row came from. Cleaning is Silver's job (Phase 4).
+
+### Step 1: Rebuild the workspace (one time)
+
+Phase 3 adds the Kafka, Delta and S3 connectors to the image. Wait until no producer is running
+(the restart stops it), then:
+
+```bash
+docker compose up -d --build
+```
+
+### Step 2: Load the 8 reference tables (about 30 seconds)
+
+```bash
+docker compose exec workspace python /home/jovyan/src/batch/load_bronze_tables.py
+```
+
+Expect 8 lines ending in `Done.` (customers 99,441 rows, geolocation 1,000,163, ...). Safe to rerun:
+each run overwrites the table and Delta keeps the old version.
+
+### Step 3: Stream orders into Bronze
+
+Process everything currently in the topic, then stop:
+
+```bash
+docker compose exec workspace python /home/jovyan/src/streaming/orders_to_bronze.py --available-now
+```
+
+Or leave it running so new orders land every 10 seconds (run the producer in a second terminal to
+watch it happen; Ctrl+C stops it):
+
+```bash
+docker compose exec workspace python /home/jovyan/src/streaming/orders_to_bronze.py
+```
+
+Run it again any time: the checkpoint remembers which Kafka offsets were already written, so it
+only picks up new orders. To rebuild `bronze/orders` from scratch, delete both
+`lake/bronze/orders` and `lake/_checkpoints/bronze_orders` in the MinIO console first.
+
+### Step 4: Look at the result
+
+- Run `notebooks/01_bronze_check.ipynb`: row counts, a raw order, the duplicates, Delta history and time travel.
+- MinIO console (http://localhost:9001) > bucket `lake` > `bronze/`: the Parquet files and `_delta_log/` folders.
+
+---
+
 ## Day-to-day commands
 
 ```bash
@@ -125,8 +179,11 @@ docker compose ps           # what's running?
 docker-compose.yml        the whole local stack
 docker/workspace/         Dockerfile for the Jupyter + PySpark container
 dags/                     Airflow DAGs
+src/common/               shared Spark session (Delta + MinIO settings)
 src/producers/            Kafka producers (order replay)
 src/consumers/            Kafka consumers (peek tool)
+src/streaming/            Spark Structured Streaming jobs (Kafka -> Bronze)
+src/batch/                Spark batch jobs (CSVs -> Bronze)
 notebooks/                Jupyter notebooks
 data/raw/olist/           the 9 Olist CSVs (never committed to Git)
 scripts/                  helper scripts
@@ -145,16 +202,17 @@ docs/                     design doc + tool guide (read tool-guide.md!)
 | `service "workspace" is not running` | Run `docker compose up -d` from the project folder |
 | Notebook says "detecting kernels" forever | Enter `http://localhost:8888` (no token in URL) and give the token when prompted |
 | Python code typed in the terminal gives `command not found: import` | That's Python; run it in a notebook cell, not the terminal |
+| `No module named 'pyspark'` / `'common'`, or `Failed to find data source: kafka` / `delta` | Workspace is still the pre-Phase-3 image. Run `docker compose up -d --build` |
 | Everything slow | Raise Docker Desktop memory to 8 GB+ |
 
 ## Roadmap
 
 | Phase | What you build | What you learn | Status |
 |---|---|---|---|
-| 1 | Local stack in Docker | containers, networking, volumes | in this package |
-| 2 | Kafka producer replaying orders | topics, partitions, keys, serialization | in this package |
-| 3 | Spark Structured Streaming into Bronze Delta tables | schemas, checkpoints, medallion | next |
-| 4 | Silver layer: clean, dedupe, join all 9 tables | PySpark transforms, data quality | |
+| 1 | Local stack in Docker | containers, networking, volumes | done |
+| 2 | Kafka producer replaying orders | topics, partitions, keys, serialization | done |
+| 3 | Spark Structured Streaming into Bronze Delta tables | schemas, checkpoints, medallion | done |
+| 4 | Silver layer: clean, dedupe, join all 9 tables | PySpark transforms, data quality | next |
 | 5 | Gold marts + CDC-style incremental loads | modeling, incremental processing | |
 | 6 | Snowflake + dbt models and tests | warehouse modeling, dbt | |
 | 7 | Airflow DAGs orchestrating the pipeline | scheduling, retries, alerting | |
