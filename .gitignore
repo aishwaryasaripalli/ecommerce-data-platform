@@ -1,0 +1,31 @@
+# Datasets are never committed (large, and not ours to redistribute)
+data/raw/*
+!data/raw/olist/
+data/raw/olist/*
+!data/raw/olist/.gitkeep
+data/lake/
+*.csv
+*.parquet
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets
+.env
+*.pem
+.aws/
+
+# Terraform (later phases)
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# OS / editor
+.DS_Store
+.vscode/

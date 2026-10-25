@@ -1,0 +1,136 @@
+# E-Commerce Data Platform: local development stack
+#
+# `name:` pins the Compose project name, so renaming this folder never again
+# orphans your containers (the problem that made `docker compose ps` show nothing).
+name: ecommerce-data-platform
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  # Same secret in webserver + scheduler so the UI can read task logs
+  AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-only-not-a-real-secret
+
+x-airflow-volumes: &airflow-volumes
+  - ./dags:/opt/airflow/dags
+  - airflow_logs:/opt/airflow/logs
+
+services:
+
+  # Kafka: real-time event streaming (single node, KRaft mode, no Zookeeper)
+  # Inside Docker, other containers reach it at kafka:9092.
+  # From your Mac, use localhost:9094.
+  kafka:
+    image: bitnamilegacy/kafka:3.7.0
+    ports:
+      - "9094:9094"
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+  # Kafka UI: browse topics and messages at http://localhost:8085
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8085:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      - kafka
+
+  # MinIO: S3-compatible object storage (our local "S3 data lake")
+  # API: http://localhost:9000   Console: http://localhost:9001
+  minio:
+    image: pgsty/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  # Postgres: Airflow's metadata database (not our analytics warehouse)
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot job: creates Airflow's tables + admin user (admin / admin), then exits.
+  # The webserver and scheduler wait for it, so a single `docker compose up -d` is enough.
+  airflow-init:
+    image: apache/airflow:2.9.3
+    environment: *airflow-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command: >
+      -c "airflow db migrate &&
+      airflow users create --username admin --password admin
+      --firstname Air --lastname Flow --role Admin --email admin@example.com || true"
+
+  # Airflow UI: http://localhost:8080 (admin / admin)
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    environment: *airflow-env
+    volumes: *airflow-volumes
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+
+  # Airflow scheduler: actually runs DAGs on their schedule
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    environment: *airflow-env
+    volumes: *airflow-volumes
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+
+  # Workspace: Jupyter + PySpark + kafka-python, where your code runs.
+  # Jupyter: http://localhost:8888/?token=datalake123
+  workspace:
+    build: ./docker/workspace
+    image: ecommerce-workspace:local
+    ports:
+      - "8888:8888"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./src:/home/jovyan/src
+      - ./data:/home/jovyan/data
+    command: start-notebook.sh --NotebookApp.token='datalake123'
+
+volumes:
+  kafka_data:
+  minio_data:
+  postgres_data:
+  airflow_logs:
