@@ -34,6 +34,7 @@ def test_orders_keeps_one_row_per_order_latest_message_wins(spark):
     out = {r.order_id: r for r in T.orders(df).collect()}
     assert len(out) == 2
     assert out["o1"].order_status == "delivered"
+    assert out["o1"].last_event_at == datetime(2026, 1, 2)
 
 
 def test_orders_types_and_delivery_metrics(spark):

@@ -3,7 +3,7 @@
 An end-to-end data engineering project built to learn (and demonstrate) Kafka, Spark, Delta Lake,
 Airflow, dbt, Snowflake, Terraform and CI/CD on the public **Olist Brazilian e-commerce** dataset.
 
-**Current status: Phases 1-4 done: local stack, Kafka order replay, Bronze and Silver Delta tables on MinIO.**
+**Current status: Phases 1-5 done: local stack, Kafka order replay, Bronze/Silver/Gold Delta tables on MinIO with incremental CDC-style loads.**
 
 ---
 
@@ -224,6 +224,74 @@ whether late deliveries get worse reviews).
 
 ---
 
+## Phase 5: Gold marts + incremental (CDC-style) loads
+
+```
+order_updates.py --> Kafka --> Bronze (append) --MERGE--> Silver orders --Change Data Feed--> Gold (only affected slices)
+```
+
+| Gold mart | One row per | Answers |
+|---|---|---|
+| `sales_daily` | purchase day x category | revenue, orders, items, freight (canceled/unavailable excluded) |
+| `delivery_by_state` | customer state x month | delivery days, late rate, review score (delivered orders) |
+| `seller_scorecard` | seller | volume, revenue, review score, late rate, first/last sale |
+
+**Incremental, not rebuild.** Orders change after they're placed (shipped -> delivered, processing
+-> canceled). `order_updates.py` publishes such changes to Kafka like a CDC tool would. Then:
+
+- `silver_orders_incremental.py` reads only new Bronze rows (streaming checkpoint) and **MERGEs** them
+  into `silver.orders`: newer events update, older ones are ignored, reruns change nothing.
+- `build_gold.py` reads only the rows that changed in `silver.orders` (Delta **Change Data Feed**,
+  tracked by a watermark), finds the days, state-months and sellers they touch, recomputes just those
+  slices and MERGEs them into Gold. If a reference table changed, it rebuilds instead.
+- `--verify` recomputes every mart from scratch and checks the incremental result matches it exactly.
+
+### Step 1: One-time setup
+
+Phase 5 adds a `last_event_at` column to Silver orders and switches on Change Data Feed, so rebuild
+Silver once, then do the first Gold build:
+
+```bash
+docker compose exec workspace python /home/jovyan/src/batch/build_silver.py
+```
+
+```bash
+docker compose exec workspace python /home/jovyan/src/batch/build_gold.py
+```
+
+### Step 2: Change some orders and watch them flow through
+
+Send 50 deliveries and 20 cancellations to Kafka:
+
+```bash
+docker compose exec workspace python /home/jovyan/src/producers/order_updates.py --deliver 50 --cancel 20
+```
+
+Land them in Bronze, MERGE them into Silver, then update Gold incrementally and verify it:
+
+```bash
+docker compose exec workspace python /home/jovyan/src/streaming/orders_to_bronze.py --available-now
+```
+
+```bash
+docker compose exec workspace python /home/jovyan/src/streaming/silver_orders_incremental.py --available-now
+```
+
+```bash
+docker compose exec workspace python /home/jovyan/src/batch/build_gold.py --verify
+```
+
+Expect `70 inserted or updated` from Silver, `INCREMENTAL` lines from Gold, and `MATCH` for all
+three marts. Run the last two again: nothing changes (the jobs are idempotent). Use `--seed 7` on
+`order_updates.py` to change a different set of orders.
+
+### Step 3: Look at the result
+
+Run `notebooks/03_gold_check.ipynb`: monthly revenue, slowest states, worst-rated sellers, and one
+changed order traced from Kafka to Silver's Change Data Feed.
+
+---
+
 ## Day-to-day commands
 
 ```bash
@@ -242,11 +310,12 @@ docker-compose.yml        the whole local stack
 docker/workspace/         Dockerfile for the Jupyter + PySpark container
 dags/                     Airflow DAGs
 src/common/               shared Spark session (Delta + MinIO settings)
-src/producers/            Kafka producers (order replay)
+src/producers/            Kafka producers (order replay, order update simulator)
 src/consumers/            Kafka consumers (peek tool)
-src/streaming/            Spark Structured Streaming jobs (Kafka -> Bronze)
-src/batch/                Spark batch jobs (CSVs -> Bronze, Bronze -> Silver)
+src/streaming/            Spark Structured Streaming jobs (Kafka -> Bronze, Bronze -> Silver MERGE)
+src/batch/                Spark batch jobs (CSVs -> Bronze, Silver full build, Gold build)
 src/silver/               Silver transforms + data quality checks
+src/gold/                 Gold mart definitions
 tests/                    pytest unit tests (run inside the workspace container)
 notebooks/                Jupyter notebooks
 data/raw/olist/           the 9 Olist CSVs (never committed to Git)
@@ -277,8 +346,8 @@ docs/                     design doc + tool guide (read tool-guide.md!)
 | 2 | Kafka producer replaying orders | topics, partitions, keys, serialization | done |
 | 3 | Spark Structured Streaming into Bronze Delta tables | schemas, checkpoints, medallion | done |
 | 4 | Silver layer: clean, dedupe, join all 9 tables | PySpark transforms, data quality | done |
-| 5 | Gold marts + CDC-style incremental loads | modeling, incremental processing | next |
-| 6 | Snowflake + dbt models and tests | warehouse modeling, dbt | |
+| 5 | Gold marts + CDC-style incremental loads | modeling, incremental processing | done |
+| 6 | Snowflake + dbt models and tests | warehouse modeling, dbt | next |
 | 7 | Airflow DAGs orchestrating the pipeline | scheduling, retries, alerting | |
 | 8 | Data contracts, schema versioning, catalog | governance | |
 | 9 | AWS (S3, Glue, Athena) via Terraform + GitHub Actions CI/CD | IaC, CI/CD | |

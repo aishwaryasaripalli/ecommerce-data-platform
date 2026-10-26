@@ -62,11 +62,15 @@ def _drop_bronze_metadata(df: DataFrame) -> DataFrame:
 # ---------------------------------------------------------------------------
 
 def orders(bronze_orders: DataFrame) -> DataFrame:
-    """One row per order_id (latest Kafka message wins), timestamps typed, delivery metrics added."""
+    """One row per order_id (latest Kafka message wins), timestamps typed, delivery metrics added.
+
+    `last_event_at` (when Kafka received the winning message) is kept so incremental
+    MERGE loads can tell whether an incoming update is newer than what Silver has.
+    """
     deduped = latest_per_key(
         bronze_orders, ["order_id"],
         [F.col("_kafka_timestamp").desc(), F.col("_kafka_offset").desc()],
-    )
+    ).withColumn("last_event_at", F.col("_kafka_timestamp"))
     ts_cols = ["order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date",
                "order_delivered_customer_date", "order_estimated_delivery_date"]
     out = _drop_bronze_metadata(deduped)

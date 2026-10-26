@@ -12,7 +12,8 @@ HOW A RUN WORKS (a pattern called write-audit-publish)
     Check results are saved to s3a://lake/_quality/silver_checks either way.
 
     Every run is a full rebuild from Bronze (Silver is always reproducible from
-    Bronze). Phase 5 replaces this with incremental MERGE loads.
+    Bronze). Use it for the first load and for backfills; day to day, Phase 5's
+    src/streaming/silver_orders_incremental.py MERGEs only new and changed orders.
 
 USAGE (inside the workspace container; see README Phase 4)
     python /home/jovyan/src/batch/build_silver.py
@@ -32,6 +33,8 @@ from silver.quality import QualitySuite
 ORDER_STATUSES = ["created", "approved", "invoiced", "processing", "shipped",
                   "delivered", "canceled", "unavailable"]
 PAYMENT_TYPES = ["credit_card", "boleto", "voucher", "debit_card"]
+# Tables the incremental Gold job (Phase 5) reads row-level changes from
+CDF_TABLES = ["orders"]
 
 
 def build(spark) -> dict:
@@ -144,6 +147,10 @@ def main() -> None:
         target = lake_path("silver", name)
         df.write.format("delta").mode("overwrite").option("overwriteSchema", True).save(target)
         print(f"  {name:<22} {df.count():>9,} rows -> {target}")
+    # Phase 5: record row-level changes so Gold can update incrementally (Change Data Feed)
+    for name in CDF_TABLES:
+        spark.sql(f"ALTER TABLE delta.`{lake_path('silver', name)}` "
+                  "SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
     print(f"Done. Run id {run_id}.")
 
 
