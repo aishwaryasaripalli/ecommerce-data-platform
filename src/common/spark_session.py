@@ -75,6 +75,10 @@ def get_spark(app_name: str) -> SparkSession:
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
                 "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+        # Our jobs scan whole files. The default policy flips to "random" after Parquet's
+        # footer seek and then fetches tiny ranges, one HTTP request each: a 25 MB table
+        # took 12 minutes to read instead of 1 second.
+        .config("spark.hadoop.fs.s3a.experimental.input.fadvise", "sequential")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")

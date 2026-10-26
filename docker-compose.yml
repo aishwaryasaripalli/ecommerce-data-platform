@@ -131,6 +131,7 @@ services:
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./src:/home/jovyan/src
+      - ./tests:/home/jovyan/tests
       - ./data:/home/jovyan/data
     command: start-notebook.sh --NotebookApp.token='datalake123'
 

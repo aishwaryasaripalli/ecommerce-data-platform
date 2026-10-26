@@ -15,6 +15,8 @@ KEY CONCEPTS YOU'LL MEET HERE
                        silently becoming null. Silver casts types.
     multiLine        : review comments contain line breaks inside quoted fields.
                        Without this option one review splits into several broken rows.
+                       It's only switched on for reviews: a multiLine CSV can't be split,
+                       so Spark reads it with a single task (slow for geolocation's 1M rows).
     overwrite        : each run replaces the table with a full fresh copy, and
                        Delta keeps the old version (time travel), so reruns are safe.
 
@@ -32,6 +34,9 @@ from pyspark.sql import functions as F
 from common.spark_session import get_spark, lake_path
 
 RAW_DIR = "/home/jovyan/data/raw/olist"
+
+# Tables whose quoted text fields contain line breaks
+MULTILINE_TABLES = {"order_reviews"}
 
 # Bronze table name -> source CSV (orders is missing on purpose: it arrives via Kafka)
 TABLES = {
@@ -58,7 +63,7 @@ def main() -> None:
         df = (
             spark.read
             .option("header", True)
-            .option("multiLine", True)
+            .option("multiLine", table in MULTILINE_TABLES)
             .option("escape", '"')
             .option("encoding", "UTF-8")
             .csv(source)

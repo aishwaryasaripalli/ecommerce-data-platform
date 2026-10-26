@@ -3,7 +3,7 @@
 An end-to-end data engineering project built to learn (and demonstrate) Kafka, Spark, Delta Lake,
 Airflow, dbt, Snowflake, Terraform and CI/CD on the public **Olist Brazilian e-commerce** dataset.
 
-**Current status: Phases 1-3 done: local stack, Kafka order replay, and Bronze Delta tables on MinIO.**
+**Current status: Phases 1-4 done: local stack, Kafka order replay, Bronze and Silver Delta tables on MinIO.**
 
 ---
 
@@ -170,6 +170,60 @@ only picks up new orders. To rebuild `bronze/orders` from scratch, delete both
 
 ---
 
+## Phase 4: Silver layer (clean, typed, deduplicated, joined)
+
+```
+s3a://lake/bronze/<table> --(src/silver/transforms.py + quality checks)--> s3a://lake/silver/<table>
+```
+
+| Silver table | What changed from Bronze |
+|---|---|
+| `orders` | one row per order (the 600 duplicate test sends removed), timestamps typed, `delivery_days` and `is_delivered_late` added |
+| `customers`, `sellers` | city names normalized (`São Paulo ` -> `sao paulo`) so they match geolocation |
+| `order_items`, `order_payments` | ints and `decimal(12,2)` money (never float for money) |
+| `order_reviews` | keyed on `(review_id, order_id)`: `review_id` alone isn't unique in Olist |
+| `products` | misspelled source columns fixed (`lenght` -> `length`), English category joined in, 2 missing translations patched, no category -> `unknown` |
+| `geolocation` | 1M raw points -> one point per zip prefix; points outside Brazil dropped |
+| `order_items_enriched` | one row per order item with customer, product, seller, both locations, payment total and review score joined in |
+
+### Step 1: Rebuild the workspace (one time)
+
+Phase 4 adds `pytest` and mounts `tests/`. Make sure no producer or streaming job is running, then:
+
+```bash
+docker compose up -d --build
+```
+
+### Step 2: Run the unit tests (about 10 seconds)
+
+```bash
+docker compose exec workspace pytest /home/jovyan/tests -q
+```
+
+Expect `8 passed`. They run the transforms on tiny hand-made tables, with no Kafka or MinIO involved.
+
+### Step 3: Build Silver
+
+```bash
+docker compose exec workspace python /home/jovyan/src/batch/build_silver.py
+```
+
+The job builds every table, runs 36 data quality checks, and **only writes to the lake if no
+`error` check fails** (a pattern called write-audit-publish), so a bad run never replaces good data.
+`warn` results are real quirks of the source data (for example 8 orders marked delivered with no
+delivery date); they're reported and the build continues. Every run's results are saved to
+`s3a://lake/_quality/silver_checks`.
+
+Add `--dry-run` to build and check without writing anything.
+
+### Step 4: Look at the result
+
+Run `notebooks/02_silver_check.ipynb`: Bronze vs Silver counts, the typed schema, the quality
+results, and two real questions answered from `order_items_enriched` (top categories by revenue;
+whether late deliveries get worse reviews).
+
+---
+
 ## Day-to-day commands
 
 ```bash
@@ -191,7 +245,9 @@ src/common/               shared Spark session (Delta + MinIO settings)
 src/producers/            Kafka producers (order replay)
 src/consumers/            Kafka consumers (peek tool)
 src/streaming/            Spark Structured Streaming jobs (Kafka -> Bronze)
-src/batch/                Spark batch jobs (CSVs -> Bronze)
+src/batch/                Spark batch jobs (CSVs -> Bronze, Bronze -> Silver)
+src/silver/               Silver transforms + data quality checks
+tests/                    pytest unit tests (run inside the workspace container)
 notebooks/                Jupyter notebooks
 data/raw/olist/           the 9 Olist CSVs (never committed to Git)
 scripts/                  helper scripts
@@ -220,8 +276,8 @@ docs/                     design doc + tool guide (read tool-guide.md!)
 | 1 | Local stack in Docker | containers, networking, volumes | done |
 | 2 | Kafka producer replaying orders | topics, partitions, keys, serialization | done |
 | 3 | Spark Structured Streaming into Bronze Delta tables | schemas, checkpoints, medallion | done |
-| 4 | Silver layer: clean, dedupe, join all 9 tables | PySpark transforms, data quality | next |
-| 5 | Gold marts + CDC-style incremental loads | modeling, incremental processing | |
+| 4 | Silver layer: clean, dedupe, join all 9 tables | PySpark transforms, data quality | done |
+| 5 | Gold marts + CDC-style incremental loads | modeling, incremental processing | next |
 | 6 | Snowflake + dbt models and tests | warehouse modeling, dbt | |
 | 7 | Airflow DAGs orchestrating the pipeline | scheduling, retries, alerting | |
 | 8 | Data contracts, schema versioning, catalog | governance | |

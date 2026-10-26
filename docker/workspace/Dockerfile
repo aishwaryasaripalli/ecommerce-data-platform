@@ -21,7 +21,7 @@ RUN cd "${SPARK_HOME}/jars" && \
 
 USER ${NB_UID}
 # delta-spark gives Python the DeltaTable API; --no-deps keeps the image's own pyspark
-RUN pip install --no-cache-dir kafka-python boto3 && \
+RUN pip install --no-cache-dir kafka-python boto3 pytest && \
     pip install --no-cache-dir --no-deps delta-spark==3.2.0
 
 # Let plain `python script.py` import pyspark (notebooks already could),
